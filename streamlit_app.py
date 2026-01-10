@@ -202,63 +202,63 @@ def display_results(results: dict):
         for warning in safety_warnings:
             st.warning(warning)
     
-    # Repair Instructions Section
-    st.header("🔧 Repair Instructions")
+    # # Repair Instructions Section
+    # st.header("🔧 Repair Instructions")
     
-    # Recommended fix steps from analysis
-    fix_steps = analysis.get("recommended_fix_steps") or []
-    if fix_steps:
-        st.subheader("Recommended Steps")
-        for i, step in enumerate(fix_steps, 1):
-            st.write(f"**Step {i}:** {step}")
+    # # Recommended fix steps from analysis
+    # fix_steps = analysis.get("recommended_fix_steps") or []
+    # if fix_steps:
+    #     st.subheader("Recommended Steps")
+    #     for i, step in enumerate(fix_steps, 1):
+    #         st.write(f"**Step {i}:** {step}")
     
-    # RAG-generated answer (main answer)
-    if answer_text:
-        st.subheader("Detailed Repair Guide")
-        st.markdown(answer_text)
+    # # RAG-generated answer (main answer)
+    # if answer_text:
+    #     st.subheader("Detailed Repair Guide")
+    #     st.markdown(answer_text)
     
-    # Tools and Parts Needed
-    tools_parts = analysis.get("tools_or_parts_needed") or []
-    if tools_parts:
-        st.subheader("Required Tools & Parts")
-        st.write(", ".join(tools_parts))
+    # # Tools and Parts Needed
+    # tools_parts = analysis.get("tools_or_parts_needed") or []
+    # if tools_parts:
+    #     st.subheader("Required Tools & Parts")
+    #     st.write(", ".join(tools_parts))
     
-    # Sources and Citations
-    if citations:
-        st.header("📖 Sources & References")
-        st.write(f"Found {len(citations)} relevant document sections:")
+    # # Sources and Citations
+    # if citations:
+    #     st.header("📖 Sources & References")
+    #     st.write(f"Found {len(citations)} relevant document sections:")
         
-        with st.expander("View All Citations", expanded=False):
-            for i, citation in enumerate(citations, 1):
-                with st.container():
-                    file_name = citation.get("file") or "Unknown"
-                    page_num = citation.get("page")
-                    snippet = citation.get("snippet", "")
-                    distance = citation.get("distance")
+    #     with st.expander("View All Citations", expanded=False):
+    #         for i, citation in enumerate(citations, 1):
+    #             with st.container():
+    #                 file_name = citation.get("file") or "Unknown"
+    #                 page_num = citation.get("page")
+    #                 snippet = citation.get("snippet", "")
+    #                 distance = citation.get("distance")
                     
-                    st.markdown(f"**Citation {i}**")
-                    st.markdown(f"- **Source:** {file_name}")
-                    if page_num is not None:
-                        st.markdown(f"- **Page:** {page_num}")
-                    if distance is not None:
-                        st.markdown(f"- **Relevance Score:** {distance:.3f}")
-                    if snippet:
-                        st.markdown(f"- **Excerpt:** {snippet[:300]}{'...' if len(snippet) > 300 else ''}")
-                    st.divider()
+    #                 st.markdown(f"**Citation {i}**")
+    #                 st.markdown(f"- **Source:** {file_name}")
+    #                 if page_num is not None:
+    #                     st.markdown(f"- **Page:** {page_num}")
+    #                 if distance is not None:
+    #                     st.markdown(f"- **Relevance Score:** {distance:.3f}")
+    #                 if snippet:
+    #                     st.markdown(f"- **Excerpt:** {snippet[:300]}{'...' if len(snippet) > 300 else ''}")
+    #                 st.divider()
     
-    # Follow-up Questions
-    follow_ups = results.get("follow_up_questions") or []
-    if follow_ups:
-        st.header("❓ Follow-up Questions")
-        st.write("To help diagnose the issue more accurately, consider answering these:")
-        for i, question in enumerate(follow_ups[:5], 1):  # Show top 5
-            st.write(f"{i}. {question}")
+    # # Follow-up Questions
+    # follow_ups = results.get("follow_up_questions") or []
+    # if follow_ups:
+    #     st.header("❓ Follow-up Questions")
+    #     st.write("To help diagnose the issue more accurately, consider answering these:")
+    #     for i, question in enumerate(follow_ups[:5], 1):  # Show top 5
+    #         st.write(f"{i}. {question}")
     
-    # Transcript (expandable)
-    transcript = results.get("transcript", "")
-    if transcript:
-        with st.expander("View Video Transcript", expanded=False):
-            st.write(transcript)
+    # # Transcript (expandable)
+    # transcript = results.get("transcript", "")
+    # if transcript:
+    #     with st.expander("View Video Transcript", expanded=False):
+    #         st.write(transcript)
 
 
 def main():
