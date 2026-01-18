@@ -83,11 +83,17 @@ class VectorStore:
 
         logger.info(f"Adding {len(texts)} documents to vector store")
 
+        # Clean metadata: remove None values (ChromaDB doesn't accept None)
+        cleaned_metadatas = [
+            {k: v for k, v in metadata.items() if v is not None}
+            for metadata in metadatas
+        ]
+
         try:
             self.collection.add(
                 embeddings=embeddings,
                 documents=texts,
-                metadatas=metadatas,
+                metadatas=cleaned_metadatas,
                 ids=ids,
             )
             logger.info(f"Successfully added {len(texts)} documents")

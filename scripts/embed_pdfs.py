@@ -20,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def embed_pdf_file(pdf_path: str | Path, vector_store: VectorStore, settings) -> None:
+def embed_pdf_file(pdf_path: str | Path, vector_store: VectorStore, settings, part_number: str | None = None) -> None:
     """
     Process a single PDF file and add its embeddings to the vector store.
 
@@ -28,6 +28,7 @@ def embed_pdf_file(pdf_path: str | Path, vector_store: VectorStore, settings) ->
         pdf_path: Path to the PDF file
         vector_store: VectorStore instance
         settings: Settings instance
+        part_number: Optional part number to associate with this PDF
     """
     pdf_path = Path(pdf_path)
     if not pdf_path.exists():
@@ -49,14 +50,17 @@ def embed_pdf_file(pdf_path: str | Path, vector_store: VectorStore, settings) ->
 
     # Extract texts and metadatas
     texts = [chunk["text"] for chunk in chunks]
-    metadatas = [
-        {
+    metadatas = []
+    for chunk in chunks:
+        metadata = {
             "source_file": chunk["source_file"],
             "page_number": chunk["page_number"],
             "chunk_index": chunk["chunk_index"],
         }
-        for chunk in chunks
-    ]
+        # Only add part_number if it's not None (ChromaDB doesn't accept None values)
+        if part_number is not None:
+            metadata["part_number"] = part_number
+        metadatas.append(metadata)
 
     # Generate IDs based on file name and chunk index
     ids = [f"{pdf_path.stem}_page{chunk['page_number']}_chunk{chunk['chunk_index']}" for chunk in chunks]
@@ -101,17 +105,23 @@ def main() -> None:
     logger.info(f"Vector store initialized: {info}")
 
     # PDF files to process (relative to project root)
+    # Format: (file_path, part_number) where part_number can be None
     pdf_files = [
-        "2024-SCA_SalesBrochure_digital_USA-324-1-min.pdf",
-        "Productcatalog2025.pdf",
+        ("2024-SCA_SalesBrochure_digital_USA-324-1-min.pdf", None),
+        ("Productcatalog2025.pdf", None),
+        # Heater files with part number CHS199100RECiN
+        ("heater/100000808 Demand Duo R-Series (REC) Installation and Operation Manual.pdf", "CHS199100RECiN"),
+        ("heater/100000809 Demand Duo R-Series (REC) Technical Data Sheet.pdf", "CHS199100RECiN"),
+        ("heater/100000820-Demand Duo R-Series (REC) Specification Sheet.pdf", "CHS199100RECiN"),
+        ("heater/100000823-CHS199100RECiN Engineering Specification.pdf", "CHS199100RECiN"),
     ]
 
     # Process each PDF file
-    for pdf_file in pdf_files:
+    for pdf_file, part_number in pdf_files:
         pdf_path = project_root / pdf_file
         if pdf_path.exists():
             try:
-                embed_pdf_file(pdf_path, vector_store, settings)
+                embed_pdf_file(pdf_path, vector_store, settings, part_number=part_number)
             except Exception as e:
                 logger.error(f"Error processing {pdf_file}: {e}", exc_info=True)
         else:

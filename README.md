@@ -48,7 +48,10 @@ python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 **Option A (PowerShell, current session only):**
 
 ```bash
-$env:GEMINI_API_KEY="PUT_YOUR_KEY_HERE"
+$env:GEMINI_API_KEY="AIzaSyBQ777hKFFj4x8ZYDRia1r_SxheBK1zsFU"
+
+$env:ELEVENLABS_API_KEY="sk_8fdff24a0c29b5584b34e5020e329ddef0ad4390986283dd"
+
 ```
 
 **Option B (persistent on Windows):**

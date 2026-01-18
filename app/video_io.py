@@ -94,13 +94,56 @@ async def download_video(url: str, *, max_bytes: int, timeout_s: float = 30.0) -
 
 async def read_upload(file_bytes: bytes, filename: Optional[str], *, max_bytes: int) -> VideoPayload:
     if len(file_bytes) > max_bytes:
-        raise VideoTooLargeError(f"Video exceeds max_bytes={max_bytes}")
+        raise VideoTooLargeError(f"File exceeds max_bytes={max_bytes}")
 
     mime = None
     if filename:
         mime, _ = mimetypes.guess_type(filename)
-    if not mime or not mime.startswith("video/"):
-        mime = "video/mp4"
+    
+    # Support both video and image MIME types
+    if not mime:
+        # Try to guess from filename extension
+        if filename:
+            filename_lower = filename.lower()
+            if filename_lower.endswith(('.jpg', '.jpeg')):
+                mime = "image/jpeg"
+            elif filename_lower.endswith('.png'):
+                mime = "image/png"
+            elif filename_lower.endswith('.webp'):
+                mime = "image/webp"
+            elif filename_lower.endswith('.gif'):
+                mime = "image/gif"
+            elif filename_lower.endswith(('.mp4', '.mov', '.avi')):
+                mime = "video/mp4"
+            elif filename_lower.endswith('.webm'):
+                mime = "video/webm"
+    
+    # Default fallback
+    if not mime:
+        # Check if it looks like an image by checking magic bytes
+        if len(file_bytes) >= 4:
+            # JPEG: FF D8 FF
+            if file_bytes[:3] == b'\xff\xd8\xff':
+                mime = "image/jpeg"
+            # PNG: 89 50 4E 47
+            elif file_bytes[:4] == b'\x89PNG':
+                mime = "image/png"
+            # GIF: 47 49 46 38
+            elif file_bytes[:4] == b'GIF8':
+                mime = "image/gif"
+            # WebP: RIFF...WEBP
+            elif file_bytes[:4] == b'RIFF' and len(file_bytes) >= 12 and file_bytes[8:12] == b'WEBP':
+                mime = "image/webp"
+            # MP4: ftyp box
+            elif b"ftyp" in file_bytes[:64]:
+                mime = "video/mp4"
+            # WebM: EBML header
+            elif file_bytes[:4] == b"\x1a\x45\xdf\xa3":
+                mime = "video/webm"
+        
+        # Final fallback
+        if not mime:
+            mime = "video/mp4"  # Default to video
 
     return VideoPayload(data=file_bytes, mime_type=mime, source="upload")
 

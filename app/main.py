@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 import time
 import uuid
@@ -10,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.requests import Request
 from fastapi.responses import JSONResponse
 
+from app.elevenlabs_tts import ElevenLabsTTSError, text_to_speech_wav
 from app.gemini_video_understanding import GeminiAPIError, analyze_video_with_gemini
 from app.settings import get_settings
 from app.video_io import VideoDownloadError, VideoTooLargeError, download_video, read_upload
@@ -164,14 +166,20 @@ async def assist_video(
     video_url: Optional[str] = Form(default=None),
     language: str = Form(default="ar"),
     user_hint: Optional[str] = Form(default=None),
+    part_number: Optional[str] = Form(default=None),
     model: Optional[str] = Form(default=None),
 ) -> JSONResponse:
     """
-    Full assistance pipeline:
-    1) Analyze video with Gemini to extract appliance/brand/issue/transcript
+    Full assistance pipeline (supports both video and image):
+    1) Analyze video/image with Gemini to extract appliance/brand/issue/part_number/transcript
     2) Generate questions (extracted + clarifying)
-    3) Retrieve support docs from Chroma (BGE-M3 embeddings)
+    3) Retrieve support docs from Chroma (BGE-M3 embeddings), optionally filtered by part_number
     4) Ask Gemini to produce a grounded, actionable answer
+    
+    Supports:
+    - Video files: MP4, WebM, MOV, AVI
+    - Image files: JPG, JPEG, PNG, WebP, GIF
+    - Video URLs: Direct links to video files
     """
     settings = get_settings()
     chosen_model = model or settings.gemini_model
@@ -190,16 +198,20 @@ async def assist_video(
                 raise HTTPException(status_code=400, detail="Provide video_url when video_file is not provided")
             payload = await download_video(video_url, max_bytes=settings.max_video_bytes)
 
+        # Detect if media is an image
+        is_image = payload.mime_type and payload.mime_type.startswith("image/")
+
         logger.info(
-            "request_id=%s event=assist_video_received source=%s mime_type=%s bytes=%d model=%s",
+            "request_id=%s event=assist_media_received source=%s mime_type=%s bytes=%d model=%s is_image=%s",
             request_id,
             payload.source,
             payload.mime_type,
             len(payload.data),
             chosen_model,
+            is_image,
         )
 
-        # 1) Video analysis
+        # 1) Media analysis (video or image)
         result = analyze_video_with_gemini(
             api_key=settings.gemini_api_key,
             model=chosen_model,
@@ -207,6 +219,7 @@ async def assist_video(
             video_mime_type=payload.mime_type,
             language=language,
             user_hint=user_hint,
+            is_image=is_image,
         )
         analysis = result.data or {}
         transcript = analysis.get("transcript", "") or ""
@@ -226,7 +239,9 @@ async def assist_video(
             issue_summary=analysis.get("issue_summary"),
             user_questions=user_questions,
         )
-        citations = retrieve_support_docs(queries)
+        # Use part_number from request if provided, otherwise from video analysis
+        effective_part_number = part_number if part_number and part_number.strip() else analysis.get("part_number")
+        citations = retrieve_support_docs(queries, part_number=effective_part_number)
 
         # 4) Grounded answer
         grounded_prompt = compose_grounded_prompt(
@@ -235,6 +250,7 @@ async def assist_video(
             clarifying_questions=clarifying_questions,
             citations=citations,
             language=language,
+            part_number=effective_part_number,
         )
         answer = answer_with_gemini(
             api_key=settings.gemini_api_key,
@@ -242,32 +258,58 @@ async def assist_video(
             prompt=grounded_prompt,
         )
 
+        # 5) Generate audio from answer text
+        audio_base64 = None
+        audio_format = None
+        if settings.elevenlabs_api_key:
+            try:
+                answer_text = answer.get("text", "")
+                if answer_text:
+                    audio_bytes, audio_format = text_to_speech_wav(
+                        text=answer_text,
+                        api_key=settings.elevenlabs_api_key,
+                        language=language,
+                    )
+                    audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
+                    logger.info("request_id=%s event=audio_generated format=%s", request_id, audio_format)
+            except ElevenLabsTTSError as e:
+                logger.warning("request_id=%s event=audio_generation_failed error=%s", request_id, str(e))
+            except Exception as e:
+                logger.warning("request_id=%s event=audio_generation_error error=%s", request_id, str(e))
+
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         logger.info("request_id=%s event=assist_pipeline_completed elapsed_ms=%d", request_id, elapsed_ms)
 
         # Prefer follow-up from analysis if any; otherwise suggest clarifying questions
         follow_ups = analysis.get("questions_to_confirm") or clarifying_questions
 
+        response_content: Dict[str, Any] = {
+            "ok": True,
+            "request_id": request_id,
+            "model_video": chosen_model,
+            "model_answer": settings.gemini_answer_model,
+            "video_source": payload.source,
+            "video_mime_type": payload.mime_type,
+            "analysis": analysis,
+            "transcript": transcript,
+            "user_questions": user_questions,
+            "clarifying_questions": clarifying_questions,
+            "retrieval": {"citations": citations},
+            "answer": {
+                "text": answer.get("text", ""),
+                "follow_up_questions": follow_ups,
+            },
+            "raw_text_video": result.raw_text,
+        }
+        
+        # Add audio fields if audio was generated
+        if audio_base64:
+            response_content["audio_base64"] = audio_base64
+            response_content["audio_format"] = audio_format or "wav"
+
         return JSONResponse(
             status_code=200,
-            content={
-                "ok": True,
-                "request_id": request_id,
-                "model_video": chosen_model,
-                "model_answer": settings.gemini_answer_model,
-                "video_source": payload.source,
-                "video_mime_type": payload.mime_type,
-                "analysis": analysis,
-                "transcript": transcript,
-                "user_questions": user_questions,
-                "clarifying_questions": clarifying_questions,
-                "retrieval": {"citations": citations},
-                "answer": {
-                    "text": answer.get("text", ""),
-                    "follow_up_questions": follow_ups,
-                },
-                "raw_text_video": result.raw_text,
-            },
+            content=response_content,
         )
 
     except VideoTooLargeError as e:

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.embeddings import create_embedding
 from app.settings import get_settings
 from app.vector_store import VectorStore
+
+logger = logging.getLogger(__name__)
 
 
 def _truncate(text: str, max_chars: int) -> str:
@@ -19,10 +22,17 @@ def retrieve_support_docs(
     *,
     per_query_k: Optional[int] = None,
     top_k: Optional[int] = None,
+    part_number: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Retrieve top-k support snippets from Chroma for the provided queries.
     Returns a list of unique citations sorted by distance ascending.
+    
+    Args:
+        queries: Iterable of query strings
+        per_query_k: Number of results per query
+        top_k: Maximum total results to return
+        part_number: Optional part number to filter results by
     """
     settings = get_settings()
     vs = VectorStore(
@@ -32,6 +42,13 @@ def retrieve_support_docs(
     per_q = per_query_k or settings.retrieval_per_query_k
     cap = top_k or settings.retrieval_top_k
 
+    # Build where clause for part_number filtering if provided
+    where_clause = None
+    if part_number:
+        where_clause = {"part_number": part_number}
+        # Log that we're filtering by part number for better debugging
+        logger.info(f"Filtering retrieval by part_number: {part_number}")
+
     aggregated: List[Tuple[str, float, str, Dict[str, Any]]] = []
 
     for q in queries:
@@ -39,7 +56,7 @@ def retrieve_support_docs(
         if not q:
             continue
         q_emb = create_embedding(q, model_name=settings.embedding_model_name)
-        res = vs.search(query_embedding=q_emb, n_results=per_q)
+        res = vs.search(query_embedding=q_emb, n_results=per_q, where=where_clause)
         ids = res.get("ids", [])
         dists = res.get("distances", [])
         docs = res.get("documents", [])
@@ -91,11 +108,14 @@ def compose_grounded_prompt(
     clarifying_questions: List[str],
     citations: List[Dict[str, Any]],
     language: str,
+    part_number: Optional[str] = None,
 ) -> str:
     tmpl = _load_prompt_template()
     appliance = analysis.get("appliance_type")
     brand = analysis.get("brand_or_model")
     issue = analysis.get("issue_summary")
+    # Use part_number from parameter if provided, otherwise from analysis
+    part_num = part_number or analysis.get("part_number")
 
     citations_block_lines: List[str] = []
     for c in citations:
@@ -106,15 +126,25 @@ def compose_grounded_prompt(
         citations_block_lines.append(
             f"- [{src} p.{page}] (distance={dist}): {snip}"
         )
-    citations_block = "\n".join(citations_block_lines)
+    citations_block = "\n".join(citations_block_lines) if citations_block_lines else "No citations found."
 
-    clarifying_block = "\n".join(f"- {q}" for q in clarifying_questions)
+    clarifying_block = "\n".join(f"- {q}" for q in clarifying_questions) if clarifying_questions else "None."
+
+    # Add note about part number if it was predicted vs extracted
+    part_num_note = ""
+    if part_num:
+        part_source = analysis.get("part_number_source", "unknown")
+        if part_source == "predicted":
+            part_num_note = " (predicted - not visible in video, but used to filter relevant documentation)"
+        elif part_source == "extracted":
+            part_num_note = " (extracted from video/image)"
 
     prompt = (
         f"{tmpl}\n\n"
         f"Language: {language}\n"
         f"Appliance: {appliance}\n"
         f"Brand/Model: {brand}\n"
+        f"Part Number: {part_num}{part_num_note}\n"
         f"Issue summary: {issue}\n\n"
         "Transcript (verbatim, may be noisy):\n"
         f"{_truncate(transcript, 4000)}\n\n"

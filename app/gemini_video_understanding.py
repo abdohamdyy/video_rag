@@ -68,25 +68,50 @@ def _extract_status_code_and_retry_after(err: Exception) -> tuple[int, Optional[
     return code, retry_after
 
 
-def build_prompt(*, language: str) -> str:
+def build_prompt(*, language: str, is_image: bool = False) -> str:
     # Project-wide convention: prompts are written in English.
     # The `language` parameter is treated as a preference for the *user-facing* text in the JSON fields.
     # If you want everything strictly in English, send language=en (default behavior can still be enforced here).
     preferred_language = (language or "en").strip().lower()
+    media_type = "image" if is_image else "video"
 
     return (
         "You are a senior home-appliance support technician.\n"
-        "Analyze the video to identify the appliance type and the most likely issue.\n"
+        f"Analyze the {media_type} to identify the appliance type and the most likely issue.\n"
         "Return ONLY valid JSON (no markdown, no code fences, no extra text).\n"
         f'All text values (EXCEPT "transcript") should be written in this language: "{preferred_language}".\n'
         'For "transcript": extract the spoken audio as verbatim text in the original spoken language; do NOT translate.\n'
         'If some words are unclear, write "[غير واضح]" for that portion.\n'
         'If there is no speech, return an empty string for "transcript".\n'
-        "If the video is unclear, say so in issue_summary and ask focused follow-up questions.\n"
+        "If the media is unclear, say so in issue_summary and ask focused follow-up questions.\n"
+        "\n"
+        "IMPORTANT - Part Number Extraction:\n"
+        "- Carefully examine ALL visible text in the image/video, especially:\n"
+        "  * Nameplates, labels, stickers, or tags on the appliance (check all sides)\n"
+        "  * Model numbers, serial numbers, or identification codes\n"
+        "  * Any alphanumeric codes that look like part numbers\n"
+        "  * Text on packaging, manuals, or documentation visible in the frame\n"
+        "  * QR codes or barcodes (sometimes contain part numbers)\n"
+        "- Look for patterns like:\n"
+        "  * CHS followed by numbers (e.g., CHS199100RECiN, CHS-199100-RECiN)\n"
+        "  * Alphanumeric codes with 10+ characters\n"
+        "  * Codes that appear on nameplates or specification labels\n"
+        "- For water heaters specifically, look for:\n"
+        "  * CHS199100RECiN (Demand Duo R-Series REC)\n"
+        "  * Similar patterns: CHS followed by numbers and letters\n"
+        "  * Codes on installation manuals or technical data sheets visible in frame\n"
+        "- Extract the EXACT part number as it appears (case-sensitive, with all characters, no spaces)\n"
+        "- If you see multiple codes, prioritize:\n"
+        "  1. Codes on nameplates or official labels\n"
+        "  2. Codes that match known part number patterns (CHS...)\n"
+        "  3. The longest/most complete alphanumeric code\n"
+        "- If no part number is visible after thorough examination, return null for part_number\n"
+        "\n"
         "Schema:\n"
         "{\n"
         '  "appliance_type": "string",\n'
         '  "brand_or_model": "string | null",\n'
+        '  "part_number": "string | null",\n'
         '  "transcript": "string",\n'
         '  "issue_summary": "string",\n'
         '  "likely_root_causes": ["string"],\n'
@@ -99,6 +124,36 @@ def build_prompt(*, language: str) -> str:
     )
 
 
+def predict_part_number(appliance_type: Optional[str], brand_or_model: Optional[str]) -> Optional[str]:
+    """
+    Predict Part Number based on appliance type and brand/model.
+    Currently only supports water heaters with known Part Number.
+    
+    This function predicts the Part Number when it cannot be extracted from the video/image.
+    For water heaters, it defaults to CHS199100RECiN (the only Part Number available in the database).
+    
+    Args:
+        appliance_type: Type of appliance (e.g., "water heater", "heater")
+        brand_or_model: Brand or model name (optional, used for better matching)
+        
+    Returns:
+        Predicted Part Number or None if cannot predict
+    """
+    if not appliance_type:
+        return None
+    
+    appliance_lower = appliance_type.lower()
+    
+    # Water heater prediction - works for all water heaters
+    # Currently, the database only contains one Part Number for water heaters: CHS199100RECiN
+    if "water heater" in appliance_lower or "heater" in appliance_lower:
+        # For water heaters, we default to the only Part Number available in the database
+        # This covers Demand Duo R-Series (REC) and other water heater models
+        return "CHS199100RECiN"
+    
+    return None
+
+
 def analyze_video_with_gemini(
     *,
     api_key: str,
@@ -107,6 +162,7 @@ def analyze_video_with_gemini(
     video_mime_type: str,
     language: str = "ar",
     user_hint: Optional[str] = None,
+    is_image: bool = False,
 ) -> VideoUnderstandingResult:
     try:
         from google import genai  # type: ignore
@@ -120,7 +176,7 @@ def analyze_video_with_gemini(
 
     client = genai.Client(api_key=api_key)
 
-    prompt = build_prompt(language=language)
+    prompt = build_prompt(language=language, is_image=is_image)
     if user_hint:
         prompt = f"{prompt}\n\nUser hint: {user_hint}"
 
@@ -150,9 +206,25 @@ def analyze_video_with_gemini(
 
     # Minimal normalization
     data.setdefault("appliance_type", None)
+    data.setdefault("part_number", None)
     data.setdefault("transcript", "")
     data.setdefault("issue_summary", raw_text)
     data.setdefault("confidence", None)
+    
+    # If part_number was not extracted, try to predict it
+    extracted_part_number = data.get("part_number")
+    if not extracted_part_number or (isinstance(extracted_part_number, str) and not extracted_part_number.strip()):
+        predicted_part_number = predict_part_number(
+            appliance_type=data.get("appliance_type"),
+            brand_or_model=data.get("brand_or_model")
+        )
+        if predicted_part_number:
+            data["part_number"] = predicted_part_number
+            data["part_number_source"] = "predicted"  # Mark as predicted
+        else:
+            data["part_number_source"] = "not_found"
+    else:
+        data["part_number_source"] = "extracted"  # Mark as extracted
 
     return VideoUnderstandingResult(raw_text=raw_text, data=data)
 

@@ -16,14 +16,33 @@ BGE_M3_MODEL_NAME = "BAAI/bge-m3"
 def get_device() -> str:
     """
     Detect available device (GPU or CPU).
+    Tests GPU compatibility before using it.
 
     Returns:
-        Device string: 'cuda' if GPU available, 'cpu' otherwise
+        Device string: 'cuda' if GPU available and compatible, 'cpu' otherwise
     """
     if torch.cuda.is_available():
-        device = "cuda"
         gpu_name = torch.cuda.get_device_name(0)
         logger.info(f"GPU detected: {gpu_name} (CUDA {torch.version.cuda})")
+        
+        # Test GPU compatibility by trying a simple operation
+        try:
+            test_tensor = torch.randn(1, 1).cuda()
+            _ = test_tensor * 2  # Simple operation
+            del test_tensor
+            torch.cuda.empty_cache()
+            device = "cuda"
+            logger.info(f"GPU is compatible and will be used")
+        except RuntimeError as e:
+            if "no kernel image" in str(e).lower() or "cuda" in str(e).lower():
+                logger.warning(
+                    f"GPU detected but not compatible with current PyTorch version. "
+                    f"Falling back to CPU. Error: {e}"
+                )
+                device = "cpu"
+            else:
+                # Re-raise if it's a different error
+                raise
     else:
         device = "cpu"
         logger.info("No GPU detected, using CPU")
@@ -101,13 +120,39 @@ def create_embeddings(
 
     # BGE-M3 supports batch processing
     # The model returns numpy arrays, convert to list
-    embeddings = model.encode(
-        texts,
-        batch_size=batch_size,
-        show_progress_bar=len(texts) > 10,
-        normalize_embeddings=True,
-        convert_to_numpy=True,
-    )
+    try:
+        embeddings = model.encode(
+            texts,
+            batch_size=batch_size,
+            show_progress_bar=len(texts) > 10,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+        )
+    except RuntimeError as e:
+        # If GPU operation fails, fall back to CPU
+        if device == "cuda" and ("cuda" in str(e).lower() or "kernel" in str(e).lower()):
+            logger.warning(
+                f"GPU operation failed, falling back to CPU. Error: {e}"
+            )
+            # Clear GPU cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # Switch to CPU and retry
+            device = "cpu"
+            batch_size = 8  # Smaller batch for CPU
+            model = get_embedding_model(model_name, device=device)
+            logger.info(f"Retrying with CPU (batch_size={batch_size})")
+            embeddings = model.encode(
+                texts,
+                batch_size=batch_size,
+                show_progress_bar=len(texts) > 10,
+                normalize_embeddings=True,
+                convert_to_numpy=True,
+            )
+        else:
+            # Re-raise if it's a different error
+            raise
 
     # Convert numpy array to list of lists
     if embeddings.ndim == 1:

@@ -57,6 +57,9 @@ chroma_db/
 
 # PDF files (user data)
 *.pdf
+# Exceptions - allow specific PDFs to be tracked
+!2024-SCA_SalesBrochure_digital_USA-324-1-min.pdf
+!Productcatalog2025.pdf
 
 # Logs
 *.log

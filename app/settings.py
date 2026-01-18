@@ -25,6 +25,9 @@ class Settings(BaseModel):
     retrieval_top_k: int = Field(default_factory=lambda: int(os.environ.get("RETRIEVAL_TOP_K", "6")))
     retrieval_per_query_k: int = Field(default_factory=lambda: int(os.environ.get("RETRIEVAL_PER_QUERY_K", "4")))
     gemini_answer_model: str = Field(default_factory=lambda: os.environ.get("GEMINI_ANSWER_MODEL", "gemini-2.5-pro"))
+    
+    # ElevenLabs TTS settings
+    elevenlabs_api_key: str = Field(default_factory=lambda: os.environ.get("ELEVENLABS_API_KEY", ""))
 
 
 @lru_cache(maxsize=1)
