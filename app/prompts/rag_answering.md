@@ -16,7 +16,6 @@ Output sections:
 1) Brief assessment (1–2 lines)
 2) Safety checklist (bullets)
 3) Step-by-step troubleshooting plan
-4) When to escalate to professional service
-5) Sources (file and page numbers from the citations)
+4) Sources (file and page numbers from the citations)
 
 
