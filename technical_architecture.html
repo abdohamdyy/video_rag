@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video AI Support System - Technical Architecture</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+        }
+        
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+            font-weight: 700;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #7f8c8d;
+            margin-bottom: 40px;
+            font-size: 1.2em;
+        }
+        
+        .section {
+            margin-bottom: 50px;
+            padding: 30px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            border-left: 5px solid #667eea;
+        }
+        
+        .section h2 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            font-size: 1.8em;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        
+        .mermaid {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .tech-stack {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        
+        .tech-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border-top: 4px solid #667eea;
+        }
+        
+        .tech-card h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 1.2em;
+        }
+        
+        .tech-card ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        
+        .tech-card li {
+            padding: 5px 0;
+            color: #555;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .tech-card li:last-child {
+            border-bottom: none;
+        }
+        
+        .flow-diagram {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        
+        .flow-step {
+            background: #e8f4f8;
+            padding: 15px;
+            margin: 10px 0;
+            border-left: 4px solid #3498db;
+            border-radius: 4px;
+        }
+        
+        .flow-step strong {
+            color: #2980b9;
+            display: block;
+            margin-bottom: 5px;
+        }
+        
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        
+        .feature-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        .feature-card h3 {
+            color: #27ae60;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+        
+        .feature-card ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        
+        .feature-card li {
+            padding: 5px 0;
+            color: #555;
+        }
+        
+        .feature-card li:before {
+            content: "✓ ";
+            color: #27ae60;
+            font-weight: bold;
+        }
+        
+        @media print {
+            body {
+                background: white;
+            }
+            .container {
+                box-shadow: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Video AI Support System</h1>
+        <p class="subtitle">Technical Architecture Diagram - POC Implementation</p>
+        
+        <!-- Main Architecture Diagram -->
+        <div class="section">
+            <h2>System Architecture Overview</h2>
+            <div class="mermaid">
+graph TB
+    subgraph "Frontend Layer"
+        ST[Streamlit UI<br/>- Video/Image Upload<br/>- Results Display<br/>- Voice Conversation UI<br/>- Knowledge Base Management]
+    end
+    
+    subgraph "API Layer"
+        API[FastAPI Server<br/>- /video/analyze<br/>- /assist/video<br/>- /conversation/start<br/>- /conversation/end<br/>- /knowledge-base/*]
+    end
+    
+    subgraph "Video/Image Analysis"
+        GEMINI_VIDEO[Gemini 2.5 Flash<br/>Video/Image Understanding<br/>- Appliance Detection<br/>- Issue Identification<br/>- Part Number Extraction<br/>- Transcript Extraction<br/>- Safety Warnings]
+    end
+    
+    subgraph "RAG Pipeline"
+        QGEN[Question Generation<br/>- Extract User Questions<br/>- Generate Clarifying Questions<br/>- Build Retrieval Queries]
+    end
+    
+    subgraph "Answer Generation"
+        GEMINI_ANSWER[Gemini 2.5 Pro<br/>Grounded Answer Generation<br/>- RAG-based Responses<br/>- Citation Integration<br/>- Multi-language Support]
+    end
+    
+    subgraph "Voice & Audio"
+        TTS[ElevenLabs TTS<br/>- Text-to-Speech<br/>- Multilingual Voices<br/>- MP3/WAV Format]
+        
+        AGENT[ElevenLabs Conversational AI<br/>- Voice Agent<br/>- Real-time Conversation<br/>- RAG Integration<br/>- Citation Tracking]
+    end
+    
+    subgraph "Knowledge Base Management"
+        KB[ElevenLabs Knowledge Base<br/>- Document Upload<br/>- Part Number Mapping<br/>- RAG Index Sync<br/>- Folder Organization]
+        
+        MAPPINGS[Part Number Mappings<br/>JSON Storage<br/>Document ID → Part Number]
+    end
+    
+    subgraph "Conversation Management"
+        CONV_STATE[ConversationState<br/>- Message Tracking<br/>- Citation Tracking<br/>- Video Context<br/>- Ticket Summary Generation]
+    end
+    
+    subgraph "Data Storage"
+        MAPPINGS_FILE[(kb_mappings.json<br/>Part Number Mappings)]
+    end
+    
+    subgraph "External APIs"
+        GOOGLE[Google Gemini API<br/>- Video Analysis<br/>- Answer Generation]
+        ELEVENLABS[ElevenLabs API<br/>- TTS<br/>- Conversational AI<br/>- Knowledge Base]
+    end
+    
+    %% User Flow
+    ST -->|Upload Video/Image| API
+    ST -->|Start Conversation| API
+    ST -->|Manage KB| API
+    
+    %% API to Analysis
+    API -->|Video/Image Bytes| GEMINI_VIDEO
+    GEMINI_VIDEO -->|Analysis JSON| API
+    
+    %% RAG Flow
+    API -->|Queries| QGEN
+    QGEN -->|Retrieval Queries| KB
+    KB -->|RAG Retrieval| API
+    
+    %% Answer Generation
+    API -->|Grounded Prompt| GEMINI_ANSWER
+    GEMINI_ANSWER -->|Answer Text| API
+    
+    %% TTS Flow
+    API -->|Answer Text| TTS
+    TTS -->|Audio Bytes| API
+    
+    %% Voice Conversation Flow
+    API -->|Video Context| AGENT
+    API -->|Agent Config| CONV_STATE
+    AGENT -->|Conversation| CONV_STATE
+    CONV_STATE -->|Ticket Summary| API
+    
+    %% Knowledge Base Flow
+    API -->|Document Upload| KB
+    KB -->|Store Mapping| MAPPINGS
+    MAPPINGS -->|Save| MAPPINGS_FILE
+    KB -->|RAG Index Sync| KB
+    
+    %% External API Calls
+    GEMINI_VIDEO -->|API Call| GOOGLE
+    GEMINI_ANSWER -->|API Call| GOOGLE
+    TTS -->|API Call| ELEVENLABS
+    AGENT -->|API Call| ELEVENLABS
+    KB -->|API Call| ELEVENLABS
+    
+    style ST fill:#e1f5ff
+    style API fill:#fff4e1
+    style GEMINI_VIDEO fill:#e8f5e9
+    style GEMINI_ANSWER fill:#e8f5e9
+    style TTS fill:#ffe0e0
+    style AGENT fill:#ffe0e0
+    style KB fill:#fff9c4
+    style CONV_STATE fill:#e0f2f1
+            </div>
+        </div>
+        
+        <!-- Data Flow Diagrams -->
+        <div class="section">
+            <h2>Data Flow Diagrams</h2>
+            
+            <h3 style="margin-top: 20px; color: #555;">1. Video/Image Analysis Flow</h3>
+            <div class="mermaid">
+sequenceDiagram
+    participant User
+    participant Streamlit
+    participant FastAPI
+    participant Gemini
+    participant User
+    
+    User->>Streamlit: Upload Video/Image
+    Streamlit->>FastAPI: POST /video/analyze
+    FastAPI->>Gemini: Analyze Video/Image
+    Gemini->>FastAPI: Analysis JSON<br/>(Appliance, Part Number, Issue, Transcript)
+    FastAPI->>Streamlit: Return Analysis
+    Streamlit->>User: Display Results
+            </div>
+            
+            <h3 style="margin-top: 30px; color: #555;">2. Full Assistance Flow (RAG Pipeline)</h3>
+            <div class="mermaid">
+sequenceDiagram
+    participant User
+    participant API
+    participant QGen
+    participant KB
+    participant Gemini
+    participant TTS
+    
+    User->>API: Upload Video/Image
+    API->>API: Video Analysis (Gemini)
+    API->>QGen: Generate Questions
+    QGen->>KB: RAG Retrieval Query
+    KB->>API: Relevant Documents with Citations
+    API->>Gemini: Compose Grounded Prompt
+    Gemini->>API: Generate Answer with Citations
+    API->>TTS: Convert to Speech (Optional)
+    TTS->>API: Audio Bytes
+    API->>User: Return Answer + Audio
+            </div>
+            
+            <h3 style="margin-top: 30px; color: #555;">3. Voice Conversation Flow</h3>
+            <div class="mermaid">
+sequenceDiagram
+    participant User
+    participant API
+    participant Agent
+    participant KB
+    participant ConvState
+    
+    User->>API: Start Conversation
+    API->>Agent: Initialize with Video Context
+    Agent->>KB: RAG Retrieval
+    KB->>Agent: Relevant Documents
+    Agent->>User: Voice Response with Citations
+    User->>Agent: Voice Question
+    Agent->>KB: RAG Retrieval
+    KB->>Agent: Relevant Documents
+    Agent->>User: Voice Answer
+    User->>API: End Conversation
+    API->>ConvState: Generate Ticket Summary
+    ConvState->>API: Ticket Summary JSON
+            </div>
+        </div>
+        
+        <!-- Technology Stack -->
+        <div class="section">
+            <h2>Technology Stack</h2>
+            <div class="tech-stack">
+                <div class="tech-card">
+                    <h3>AI/ML Models</h3>
+                    <ul>
+                        <li>Gemini 2.5 Flash (Video Analysis)</li>
+                        <li>Gemini 2.5 Pro (Answer Generation)</li>
+                    </ul>
+                </div>
+                
+                <div class="tech-card">
+                    <h3>Backend</h3>
+                    <ul>
+                        <li>FastAPI (REST API)</li>
+                        <li>Python 3.11+</li>
+                        <li>Uvicorn (ASGI Server)</li>
+                    </ul>
+                </div>
+                
+                <div class="tech-card">
+                    <h3>Frontend</h3>
+                    <ul>
+                        <li>Streamlit (Web UI)</li>
+                        <li>HTML/CSS/JavaScript</li>
+                    </ul>
+                </div>
+                
+                <div class="tech-card">
+                    <h3>Knowledge Base</h3>
+                    <ul>
+                        <li>ElevenLabs Knowledge Base</li>
+                        <li>RAG-enabled Search</li>
+                        <li>Part Number Filtering</li>
+                        <li>Document Management</li>
+                    </ul>
+                </div>
+                
+                <div class="tech-card">
+                    <h3>External APIs</h3>
+                    <ul>
+                        <li>Google Gemini API</li>
+                        <li>ElevenLabs API (TTS, Agent, KB)</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Key Features -->
+        <div class="section">
+            <h2>Key Features</h2>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <h3>Video/Image Analysis</h3>
+                    <ul>
+                        <li>Automatic video/image analysis</li>
+                        <li>Part Number extraction from video/image</li>
+                        <li>Part Number prediction if not visible</li>
+                        <li>Transcript extraction from audio</li>
+                        <li>Issue identification and root causes</li>
+                    </ul>
+                </div>
+                
+                <div class="feature-card">
+                    <h3>RAG System</h3>
+                    <ul>
+                        <li>ElevenLabs Knowledge Base RAG</li>
+                        <li>Intelligent document search</li>
+                        <li>Part Number filtering</li>
+                        <li>Relevant document retrieval</li>
+                        <li>Citations with page numbers</li>
+                        <li>Grounded answer generation</li>
+                    </ul>
+                </div>
+                
+                <div class="feature-card">
+                    <h3>Multi-language Support</h3>
+                    <ul>
+                        <li>Arabic and English support</li>
+                        <li>User language responses</li>
+                        <li>Multilingual TTS</li>
+                    </ul>
+                </div>
+                
+                <div class="feature-card">
+                    <h3>Voice Conversation</h3>
+                    <ul>
+                        <li>Real-time voice conversation</li>
+                        <li>Knowledge Base integration</li>
+                        <li>Citation tracking</li>
+                        <li>Ticket summary generation</li>
+                        <li>CRM integration ready</li>
+                    </ul>
+                </div>
+                
+                <div class="feature-card">
+                    <h3>Knowledge Base Management</h3>
+                    <ul>
+                        <li>Document upload with Part Number</li>
+                        <li>Folder organization</li>
+                        <li>RAG index synchronization</li>
+                        <li>Document management (view, delete)</li>
+                    </ul>
+                </div>
+                
+                <div class="feature-card">
+                    <h3>Safety & Quality</h3>
+                    <ul>
+                        <li>Safety warnings</li>
+                        <li>Document-based answers only</li>
+                        <li>Citation tracking</li>
+                        <li>Confidence scores</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        
+        <!-- API Endpoints -->
+        <div class="section">
+            <h2>API Endpoints</h2>
+            <div class="flow-diagram">
+                <div class="flow-step">
+                    <strong>POST /video/analyze</strong>
+                    <div>Analyze video/image and return structured JSON analysis</div>
+                </div>
+                <div class="flow-step">
+                    <strong>POST /assist/video</strong>
+                    <div>Full assistance pipeline: analysis + RAG + answer generation + TTS</div>
+                </div>
+                <div class="flow-step">
+                    <strong>POST /conversation/start</strong>
+                    <div>Start voice conversation session with ElevenLabs Agent</div>
+                </div>
+                <div class="flow-step">
+                    <strong>POST /conversation/end</strong>
+                    <div>End conversation and generate ticket summary for CRM</div>
+                </div>
+                <div class="flow-step">
+                    <strong>POST /knowledge-base/documents</strong>
+                    <div>Upload document to ElevenLabs Knowledge Base with Part Number</div>
+                </div>
+                <div class="flow-step">
+                    <strong>GET /knowledge-base/documents</strong>
+                    <div>List all documents in Knowledge Base</div>
+                </div>
+                <div class="flow-step">
+                    <strong>DELETE /knowledge-base/documents/{id}</strong>
+                    <div>Delete document from Knowledge Base</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Component Details -->
+        <div class="section">
+            <h2>Component Details</h2>
+            <div class="tech-stack">
+                <div class="tech-card">
+                    <h3>Video Analysis</h3>
+                    <ul>
+                        <li>Model: Gemini 2.5 Flash</li>
+                        <li>Extracts: Appliance Type, Brand, Part Number, Issue, Transcript</li>
+                        <li>Predicts Part Number if not visible</li>
+                        <li>Identifies root causes and safety warnings</li>
+                    </ul>
+                </div>
+                
+                <div class="tech-card">
+                    <h3>RAG Pipeline</h3>
+                    <ul>
+                        <li>Knowledge Base: ElevenLabs KB</li>
+                        <li>RAG-enabled Search</li>
+                        <li>Filtering: By Part Number</li>
+                        <li>Automatic Indexing</li>
+                        <li>Citation Tracking</li>
+                    </ul>
+                </div>
+                
+                <div class="tech-card">
+                    <h3>Answer Generation</h3>
+                    <ul>
+                        <li>Model: Gemini 2.5 Pro</li>
+                        <li>RAG-based responses</li>
+                        <li>Citation integration</li>
+                        <li>Multi-language support</li>
+                    </ul>
+                </div>
+                
+                <div class="tech-card">
+                    <h3>Voice AI</h3>
+                    <ul>
+                        <li>TTS: ElevenLabs (MP3/WAV)</li>
+                        <li>Agent: ElevenLabs Conversational AI 2.0</li>
+                        <li>Real-time conversation</li>
+                        <li>Knowledge Base RAG integration</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Integration Points -->
+        <div class="section">
+            <h2>Integration Points</h2>
+            <div class="flow-diagram">
+                <div class="flow-step">
+                    <strong>CRM Integration</strong>
+                    <div>Ticket Summary JSON format with resolution type, risk level, next action, and citations used</div>
+                </div>
+                <div class="flow-step">
+                    <strong>Google Gemini API</strong>
+                    <div>Video/image analysis and text generation</div>
+                </div>
+                <div class="flow-step">
+                    <strong>ElevenLabs API</strong>
+                    <div>Text-to-speech, conversational AI agent, and knowledge base management</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        mermaid.initialize({ 
+            startOnLoad: true,
+            theme: 'default',
+            flowchart: {
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis'
+            }
+        });
+    </script>
+</body>
+</html>
+

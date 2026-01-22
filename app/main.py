@@ -4,7 +4,7 @@ import base64
 import logging
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -25,6 +25,23 @@ from app.rag_orchestrator import (
     compose_grounded_prompt,
     answer_with_gemini,
 )
+from app.elevenlabs_knowledge_base import (
+    ElevenLabsKBError,
+    upload_document_with_part_number,
+    list_documents,
+    get_document_info,
+    delete_document,
+    sync_rag_index,
+    create_or_get_folder_by_part_number,
+    assign_knowledge_base_to_agent,
+)
+from app.elevenlabs_agent import (
+    ElevenLabsAgentError,
+    initialize_agent_with_video_context,
+    create_conversation_session,
+    generate_ticket_summary,
+)
+from app.conversation_manager import ConversationState
 
 
 app = FastAPI(title="Video Understanding API", version="0.1.0")
@@ -332,6 +349,505 @@ async def assist_video(
     except ValueError as e:
         logger.warning("request_id=%s event=bad_request error=%s", request_id, str(e))
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("request_id=%s event=internal_error", request_id)
+        raise HTTPException(status_code=500, detail=f"Internal error: {e}") from e
+
+
+@app.post("/knowledge-base/documents")
+async def add_document_to_kb(
+    file: UploadFile = File(...),
+    part_number: str = Form(...),
+    name: Optional[str] = Form(None),
+) -> JSONResponse:
+    """
+    Add new document to ElevenLabs Knowledge Base with part number.
+    """
+    settings = get_settings()
+    request_id = str(uuid.uuid4())
+    
+    # Use write key for upload operations
+    api_key = settings.get_elevenlabs_api_key_for_write()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="ELEVENLABS_API_KEY or ELEVENLABS_API_KEY_WRITE is required")
+    
+    kb_id = settings.elevenlabs_knowledge_base_id
+    if not kb_id:
+        raise HTTPException(status_code=400, detail="ELEVENLABS_KNOWLEDGE_BASE_ID is required")
+    
+    try:
+        # Read file
+        file_bytes = await file.read()
+        
+        # Get MIME type from uploaded file
+        mime_type = file.content_type
+        
+        # Upload to ElevenLabs KB
+        result = upload_document_with_part_number(
+            file_bytes=file_bytes,
+            file_name=file.filename or "document",
+            part_number=part_number,
+            api_key=api_key,
+            knowledge_base_id=kb_id,
+            custom_name=name,
+            mime_type=mime_type,
+        )
+        
+        # Sync RAG index
+        try:
+            sync_rag_index(
+                api_key=api_key,
+                knowledge_base_id=kb_id,
+                document_id=result["document_id"],
+            )
+        except Exception as e:
+            logger.warning(f"Failed to sync RAG index: {e}")
+        
+        logger.info("request_id=%s event=document_uploaded doc_id=%s", request_id, result["document_id"])
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "request_id": request_id,
+                "document_id": result["document_id"],
+                "name": result["name"],
+                "part_number": result["part_number"],
+            },
+        )
+        
+    except ElevenLabsKBError as e:
+        logger.warning("request_id=%s event=kb_upload_error error=%s", request_id, str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("request_id=%s event=internal_error", request_id)
+        raise HTTPException(status_code=500, detail=f"Internal error: {e}") from e
+
+
+@app.post("/knowledge-base/documents/batch")
+async def add_multiple_documents_to_kb(
+    files: List[UploadFile] = File(...),
+    part_number: str = Form(...),
+    custom_names: Optional[str] = Form(None),
+) -> JSONResponse:
+    """
+    Add multiple documents to ElevenLabs Knowledge Base with part number.
+    All documents will be uploaded to the same folder (Part_{part_number}).
+    
+    Args:
+        files: List of files to upload
+        part_number: Part number for all documents
+        custom_names: Optional comma-separated list of custom names (must match number of files)
+    """
+    settings = get_settings()
+    request_id = str(uuid.uuid4())
+    
+    # Use write key for upload operations
+    api_key = settings.get_elevenlabs_api_key_for_write()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="ELEVENLABS_API_KEY or ELEVENLABS_API_KEY_WRITE is required")
+    
+    kb_id = settings.elevenlabs_knowledge_base_id
+    if not kb_id:
+        raise HTTPException(status_code=400, detail="ELEVENLABS_KNOWLEDGE_BASE_ID is required")
+    
+    if not files or len(files) == 0:
+        raise HTTPException(status_code=400, detail="At least one file is required")
+    
+    # Parse custom names if provided
+    custom_names_list = None
+    if custom_names:
+        custom_names_list = [name.strip() for name in custom_names.split(",")]
+        if len(custom_names_list) != len(files):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Number of custom names ({len(custom_names_list)}) must match number of files ({len(files)})"
+            )
+    
+    try:
+        # Create or get folder for this part number
+        folder_id = create_or_get_folder_by_part_number(api_key, part_number)
+        if folder_id:
+            logger.info(f"Using folder ID: {folder_id} for part number: {part_number}")
+        else:
+            logger.warning(f"Could not create/get folder for part number: {part_number}. Uploading without folder.")
+        
+        # Upload all files
+        results = []
+        failed_uploads = []
+        
+        for idx, file in enumerate(files):
+            try:
+                # Read file
+                file_bytes = await file.read()
+                
+                # Get MIME type from uploaded file
+                mime_type = file.content_type
+                
+                # Get custom name if provided
+                custom_name = custom_names_list[idx] if custom_names_list else None
+                
+                # Upload to ElevenLabs KB
+                result = upload_document_with_part_number(
+                    file_bytes=file_bytes,
+                    file_name=file.filename or f"document_{idx}",
+                    part_number=part_number,
+                    api_key=api_key,
+                    knowledge_base_id=kb_id,
+                    custom_name=custom_name,
+                    mime_type=mime_type,
+                    parent_folder_id=folder_id,
+                )
+                
+                # Sync RAG index
+                try:
+                    sync_rag_index(
+                        api_key=api_key,
+                        knowledge_base_id=kb_id,
+                        document_id=result["document_id"],
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to sync RAG index for {file.filename}: {e}")
+                
+                results.append({
+                    "file_name": file.filename,
+                    "document_id": result["document_id"],
+                    "name": result["name"],
+                    "part_number": result["part_number"],
+                    "status": "success",
+                })
+                
+                logger.info(f"request_id={request_id} event=document_uploaded file={file.filename} doc_id={result['document_id']}")
+                
+            except ElevenLabsKBError as e:
+                error_msg = str(e)
+                failed_uploads.append({
+                    "file_name": file.filename or f"document_{idx}",
+                    "error": error_msg,
+                    "status": "failed",
+                })
+                logger.warning(f"request_id={request_id} event=kb_upload_error file={file.filename} error={error_msg}")
+            except Exception as e:  # noqa: BLE001
+                error_msg = f"Internal error: {str(e)}"
+                failed_uploads.append({
+                    "file_name": file.filename or f"document_{idx}",
+                    "error": error_msg,
+                    "status": "failed",
+                })
+                logger.exception(f"request_id={request_id} event=internal_error file={file.filename}")
+        
+        # Assign Knowledge Base to Agent if agent_id is configured
+        agent_assignment_result = None
+        if settings.elevenlabs_agent_id and len(results) > 0:
+            try:
+                agent_assignment_result = assign_knowledge_base_to_agent(
+                    api_key=api_key,
+                    agent_id=settings.elevenlabs_agent_id,
+                    knowledge_base_id=kb_id,
+                )
+                logger.info(f"request_id={request_id} event=kb_assigned_to_agent agent_id={settings.elevenlabs_agent_id} kb_id={kb_id}")
+            except Exception as e:
+                logger.warning(f"request_id={request_id} event=kb_assignment_failed error={str(e)}")
+                agent_assignment_result = {
+                    "status": "failed",
+                    "error": str(e),
+                    "note": "Please assign Knowledge Base to Agent manually via Dashboard",
+                }
+        
+        response_content = {
+            "ok": True,
+            "request_id": request_id,
+            "part_number": part_number,
+            "folder_id": folder_id,
+            "total_files": len(files),
+            "successful_uploads": len(results),
+            "failed_uploads": len(failed_uploads),
+            "results": results,
+            "failed": failed_uploads,
+        }
+        
+        if agent_assignment_result:
+            response_content["agent_assignment"] = agent_assignment_result
+        
+        return JSONResponse(
+            status_code=200,
+            content=response_content,
+        )
+        
+    except Exception as e:  # noqa: BLE001
+        logger.exception("request_id=%s event=internal_error", request_id)
+        raise HTTPException(status_code=500, detail=f"Internal error: {e}") from e
+
+
+@app.post("/knowledge-base/assign-to-agent")
+async def assign_kb_to_agent() -> JSONResponse:
+    """
+    Assign Knowledge Base to Agent.
+    This ensures the Agent can use the Knowledge Base for RAG.
+    """
+    settings = get_settings()
+    request_id = str(uuid.uuid4())
+    
+    # Use write key for assignment operations
+    api_key = settings.get_elevenlabs_api_key_for_write()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="ELEVENLABS_API_KEY or ELEVENLABS_API_KEY_WRITE is required")
+    
+    kb_id = settings.elevenlabs_knowledge_base_id
+    if not kb_id:
+        raise HTTPException(status_code=400, detail="ELEVENLABS_KNOWLEDGE_BASE_ID is required")
+    
+    agent_id = settings.elevenlabs_agent_id
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="ELEVENLABS_AGENT_ID is required")
+    
+    try:
+        result = assign_knowledge_base_to_agent(
+            api_key=api_key,
+            agent_id=agent_id,
+            knowledge_base_id=kb_id,
+        )
+        
+        logger.info(f"request_id={request_id} event=kb_assigned_to_agent agent_id={agent_id} kb_id={kb_id}")
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "request_id": request_id,
+                "agent_id": agent_id,
+                "knowledge_base_id": kb_id,
+                "assignment": result,
+            },
+        )
+        
+    except ElevenLabsKBError as e:
+        logger.warning(f"request_id={request_id} event=kb_assignment_error error={str(e)}")
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"request_id={request_id} event=internal_error")
+        raise HTTPException(status_code=500, detail=f"Internal error: {e}") from e
+
+
+@app.get("/knowledge-base/documents")
+async def list_kb_documents(
+    folder_name: Optional[str] = None,
+    parent_folder_id: Optional[str] = None,
+) -> JSONResponse:
+    """List all documents in the Knowledge Base.
+    
+    Args:
+        folder_name: Optional folder name to search for (e.g., "sm")
+        parent_folder_id: Optional folder ID to list documents from specific folder
+    """
+    settings = get_settings()
+    request_id = str(uuid.uuid4())
+    
+    # Use read key for listing documents
+    api_key = settings.get_elevenlabs_api_key_for_read()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="ELEVENLABS_API_KEY or ELEVENLABS_API_KEY_WRITE is required")
+    
+    kb_id = settings.elevenlabs_knowledge_base_id
+    if not kb_id:
+        raise HTTPException(status_code=400, detail="ELEVENLABS_KNOWLEDGE_BASE_ID is required")
+    
+    try:
+        documents = list_documents(
+            api_key=api_key,
+            knowledge_base_id=kb_id,
+            parent_folder_id=parent_folder_id,
+            folder_name=folder_name,
+        )
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "request_id": request_id,
+                "documents": documents,
+                "count": len(documents),
+            },
+        )
+        
+    except ElevenLabsKBError as e:
+        logger.warning("request_id=%s event=kb_list_error error=%s", request_id, str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("request_id=%s event=internal_error", request_id)
+        raise HTTPException(status_code=500, detail=f"Internal error: {e}") from e
+
+
+@app.delete("/knowledge-base/documents/{document_id}")
+async def delete_kb_document(document_id: str) -> JSONResponse:
+    """Delete a document from the Knowledge Base."""
+    settings = get_settings()
+    request_id = str(uuid.uuid4())
+    
+    # Use write key for delete operations
+    api_key = settings.get_elevenlabs_api_key_for_write()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="ELEVENLABS_API_KEY or ELEVENLABS_API_KEY_WRITE is required")
+    
+    kb_id = settings.elevenlabs_knowledge_base_id
+    if not kb_id:
+        raise HTTPException(status_code=400, detail="ELEVENLABS_KNOWLEDGE_BASE_ID is required")
+    
+    try:
+        delete_document(
+            api_key=api_key,
+            knowledge_base_id=kb_id,
+            document_id=document_id,
+        )
+        
+        logger.info("request_id=%s event=document_deleted doc_id=%s", request_id, document_id)
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "request_id": request_id,
+                "document_id": document_id,
+                "message": "Document deleted successfully",
+            },
+        )
+        
+    except ElevenLabsKBError as e:
+        logger.warning("request_id=%s event=kb_delete_error error=%s", request_id, str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("request_id=%s event=internal_error", request_id)
+        raise HTTPException(status_code=500, detail=f"Internal error: {e}") from e
+
+
+@app.post("/conversation/start")
+async def start_conversation(
+    video_analysis: str = Form(...),
+    language: str = Form(default="ar"),
+) -> JSONResponse:
+    """Start a voice conversation session with ElevenLabs Agent."""
+    import json
+    
+    settings = get_settings()
+    request_id = str(uuid.uuid4())
+    session_id = str(uuid.uuid4())
+    
+    if not settings.elevenlabs_api_key:
+        raise HTTPException(status_code=400, detail="ELEVENLABS_API_KEY is required")
+    
+    if not settings.elevenlabs_agent_id:
+        raise HTTPException(status_code=400, detail="ELEVENLABS_AGENT_ID is required")
+    
+    kb_id = settings.elevenlabs_knowledge_base_id
+    if not kb_id:
+        raise HTTPException(status_code=400, detail="ELEVENLABS_KNOWLEDGE_BASE_ID is required. Please create KB first.")
+    
+    try:
+        analysis_data = json.loads(video_analysis)
+        
+        # Create conversation state
+        conversation_state = ConversationState()
+        conversation_state.set_video_context(analysis_data)
+        
+        # Initialize agent with video context
+        agent_config = initialize_agent_with_video_context(
+            agent_id=settings.elevenlabs_agent_id,
+            knowledge_base_id=kb_id,
+            api_key=settings.elevenlabs_api_key,
+            video_analysis=analysis_data,
+            language=language,
+            conversation_state=conversation_state,
+        )
+        
+        # Note: Actual conversation session creation happens on the client side
+        # using the ElevenLabs SDK. This endpoint returns the configuration.
+        
+        logger.info("request_id=%s event=conversation_started session_id=%s", request_id, session_id)
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "request_id": request_id,
+                "session_id": session_id,
+                "agent_config": {
+                    "agent_id": agent_config["agent_id"],
+                    "knowledge_base_id": agent_config["knowledge_base_id"],
+                    "language": agent_config["language"],
+                },
+                "system_instructions": agent_config["system_instructions"],
+                "message": "Agent initialized. Use ElevenLabs SDK to start voice conversation.",
+            },
+        )
+        
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid video_analysis JSON: {e}") from e
+    except ElevenLabsAgentError as e:
+        logger.warning("request_id=%s event=agent_error error=%s", request_id, str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("request_id=%s event=internal_error", request_id)
+        raise HTTPException(status_code=500, detail=f"Internal error: {e}") from e
+
+
+@app.post("/conversation/end")
+async def end_conversation(
+    session_id: str = Form(...),
+    conversation_history: Optional[str] = Form(None),
+) -> JSONResponse:
+    """End a conversation session and get ticket summary."""
+    import json
+    
+    settings = get_settings()
+    request_id = str(uuid.uuid4())
+    
+    try:
+        # Parse conversation history if provided
+        history_data = None
+        if conversation_history:
+            try:
+                history_data = json.loads(conversation_history)
+            except json.JSONDecodeError:
+                pass
+        
+        # Create conversation state from history
+        conversation_state = ConversationState()
+        if history_data:
+            for msg in history_data.get("messages", []):
+                conversation_state.add_message(
+                    role=msg.get("role", "user"),
+                    text=msg.get("text", ""),
+                    citations=msg.get("citations", []),
+                )
+        
+        conversation_state.ended = True
+        
+        # Get video context if available
+        video_analysis = conversation_state.video_context
+        
+        # Generate ticket summary
+        ticket_summary = generate_ticket_summary(
+            conversation_state=conversation_state,
+            video_analysis=video_analysis,
+        )
+        
+        conversation_summary = conversation_state.get_conversation_summary()
+        
+        logger.info("request_id=%s event=conversation_ended session_id=%s", request_id, session_id)
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "request_id": request_id,
+                "session_id": session_id,
+                "ticket_summary": ticket_summary,
+                "conversation_summary": conversation_summary,
+            },
+        )
+        
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
         logger.exception("request_id=%s event=internal_error", request_id)
         raise HTTPException(status_code=500, detail=f"Internal error: {e}") from e

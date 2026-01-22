@@ -28,6 +28,32 @@ class Settings(BaseModel):
     
     # ElevenLabs TTS settings
     elevenlabs_api_key: str = Field(default_factory=lambda: os.environ.get("ELEVENLABS_API_KEY", ""))
+    
+    # ElevenLabs API Keys (Read/Write separation)
+    # Read key: for read operations (list, get)
+    # Write key: for write operations (upload, delete, sync)
+    # If write key not provided, read key will be used for both (backward compatibility)
+    elevenlabs_api_key_write: str = Field(default_factory=lambda: os.environ.get("ELEVENLABS_API_KEY_WRITE", ""))
+    
+    # ElevenLabs Agent and Knowledge Base settings
+    elevenlabs_agent_id: str = Field(default_factory=lambda: os.environ.get("ELEVENLABS_AGENT_ID", ""))
+    elevenlabs_knowledge_base_id: str = Field(default_factory=lambda: os.environ.get("ELEVENLABS_KNOWLEDGE_BASE_ID", ""))
+    default_followup_mode: str = Field(default_factory=lambda: os.environ.get("DEFAULT_FOLLOWUP_MODE", "troubleshooting"))
+    auto_sync_kb: bool = Field(default_factory=lambda: os.environ.get("AUTO_SYNC_KB", "false").lower() == "true")
+    
+    def get_elevenlabs_api_key_for_read(self) -> str:
+        """Get API key for read operations. Falls back to write key if read key not available."""
+        if self.elevenlabs_api_key:
+            return self.elevenlabs_api_key
+        # Fallback to write key if read key not provided
+        return self.get_elevenlabs_api_key_for_write()
+    
+    def get_elevenlabs_api_key_for_write(self) -> str:
+        """Get API key for write operations. Falls back to read key if write key not available (backward compatibility)."""
+        if self.elevenlabs_api_key_write:
+            return self.elevenlabs_api_key_write
+        # Fallback to read key for backward compatibility
+        return self.elevenlabs_api_key
 
 
 @lru_cache(maxsize=1)
