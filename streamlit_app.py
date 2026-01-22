@@ -4,14 +4,13 @@ Analyzes videos to identify appliance defects and provides repair instructions w
 """
 
 import asyncio
-import json
 import logging
 import time
-from io import BytesIO
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
 import httpx
 import streamlit as st
+import streamlit.components.v1 as components
 
 from app.gemini_video_understanding import GeminiAPIError, analyze_video_with_gemini
 from app.question_generation import (
@@ -27,7 +26,6 @@ from app.rag_orchestrator import (
 from app.settings import get_settings
 from app.video_io import VideoDownloadError, VideoTooLargeError, download_video
 from app.elevenlabs_tts import ElevenLabsTTSError, text_to_speech_wav
-from app.conversation_manager import ConversationState
 from app.elevenlabs_agent import ElevenLabsAgentError
 
 logger = logging.getLogger(__name__)
@@ -404,6 +402,13 @@ def main():
         "📚 Knowledge Base"
     ])
     
+    if "last_analysis_results" not in st.session_state:
+        st.session_state.last_analysis_results = None
+    if "last_analysis_tab" not in st.session_state:
+        st.session_state.last_analysis_tab = None
+    if "last_analysis_is_image" not in st.session_state:
+        st.session_state.last_analysis_is_image = None
+
     media_bytes = None
     mime_type = None
     is_image = False
@@ -424,6 +429,152 @@ def main():
             is_image = False
             # Display video from bytes
             st.video(media_bytes)
+
+        # Analyze + results only appear in Upload Video tab
+        if media_bytes:
+            st.divider()
+            if st.button("🚀 Analyze Video", type="primary", use_container_width=True, key="analyze_media"):
+                try:
+                    settings = get_settings()
+
+                    # Validate media size
+                    max_size = settings.max_video_bytes
+                    if len(media_bytes) > max_size:
+                        st.error(
+                            f"File is too large. Maximum size: {max_size / 1024 / 1024:.0f} MB. "
+                            f"Your file: {len(media_bytes) / 1024 / 1024:.2f} MB"
+                        )
+                    else:
+                        # Process through full pipeline
+                        if mime_type is None:
+                            mime_type = "video/mp4" if not is_image else "image/jpeg"  # Default fallback
+                        start_time = time.time()
+                        results = process_video_assistance(
+                            media_bytes,
+                            mime_type,
+                            language,
+                            user_hint if user_hint.strip() else None,
+                            part_number if part_number.strip() else None,
+                            is_image=is_image,
+                        )
+                        elapsed_time = time.time() - start_time
+
+                        st.success(f"✅ Analysis complete in {elapsed_time:.1f} seconds!")
+
+                        # Persist results but render them only in tab1
+                        st.session_state.last_analysis_results = results
+                        st.session_state.last_analysis_tab = "tab1"
+                        st.session_state.last_analysis_is_image = is_image
+
+                except ValueError as e:
+                    st.error(f"Configuration error: {str(e)}")
+                    st.info("Please check your .env file or environment variables for GEMINI_API_KEY")
+                except VideoDownloadError as e:
+                    st.error(f"Video processing error: {str(e)}")
+                except GeminiAPIError as e:
+                    st.error(f"AI API error: {str(e)}")
+                    if e.retry_after_seconds:
+                        st.info(f"Please retry after {e.retry_after_seconds} seconds")
+                except Exception as e:
+                    st.error(f"Unexpected error: {str(e)}")
+                    st.exception(e)
+        else:
+            st.info("👆 Please upload a video file to begin analysis")
+
+        # Render persisted results (only here, not in other tabs)
+        if st.session_state.last_analysis_results and st.session_state.last_analysis_tab == "tab1":
+            results = st.session_state.last_analysis_results
+            analysis = results["analysis"]
+            display_results(results)
+
+            # ElevenLabs widget appears only after video analysis (not image)
+            if not st.session_state.last_analysis_is_image:
+                st.markdown("---")
+                st.subheader("🎤 Voice Conversation with AI Agent")
+
+                settings = get_settings()
+                if settings.elevenlabs_agent_id:
+                    # Get write API key (required for convai_write permission)
+                    api_key = settings.get_elevenlabs_api_key_for_write()
+                    if not api_key:
+                        st.warning(
+                            "⚠️ ELEVENLABS_API_KEY or ELEVENLABS_API_KEY_WRITE not configured. "
+                            "Please set it in .env to enable agent updates."
+                        )
+                        logger.warning("ELEVENLABS_API_KEY not configured for write operations")
+                    else:
+                        # Update Agent System Instructions with video context
+                        with st.spinner("🔄 Updating Agent with video analysis context..."):
+                            try:
+                                from app.elevenlabs_agent import update_agent_system_instructions
+
+                                logger.info("Starting agent system instructions update")
+                                logger.info(f"Agent ID: {settings.elevenlabs_agent_id}")
+                                logger.info("Using API key for write operations")
+                                logger.info(
+                                    "Video analysis - Appliance: %s, Part: %s",
+                                    analysis.get("appliance_type"),
+                                    analysis.get("part_number"),
+                                )
+
+                                update_result = update_agent_system_instructions(
+                                    agent_id=settings.elevenlabs_agent_id,
+                                    api_key=api_key,
+                                    video_analysis=analysis,
+                                    language=language,
+                                )
+
+                                if update_result.get("success"):
+                                    st.success("✅ Agent updated with video analysis context!")
+                                    logger.info("Agent update successful: %s", update_result)
+
+                                    with st.expander("📋 Agent Update Details", expanded=False):
+                                        st.json(
+                                            {
+                                                "agent_id": update_result.get("agent_id"),
+                                                "agent_name": update_result.get("agent_name"),
+                                                "system_instructions_length": update_result.get(
+                                                    "system_instructions_length"
+                                                ),
+                                                "video_context": update_result.get("video_context"),
+                                            }
+                                        )
+                                else:
+                                    st.error("❌ Failed to update Agent. Please check logs.")
+                                    logger.error("Agent update failed: %s", update_result)
+
+                            except ElevenLabsAgentError as e:
+                                st.error(f"❌ Failed to update Agent: {str(e)}")
+                                logger.error("ElevenLabs Agent Error: %s", str(e))
+                                st.warning(
+                                    "⚠️ Widget will still work, but Agent may not have the latest video context."
+                                )
+                            except Exception as e:
+                                st.error(f"❌ Unexpected error updating Agent: {str(e)}")
+                                logger.exception("Unexpected error updating agent: %s", str(e))
+                                st.warning(
+                                    "⚠️ Widget will still work, but Agent may not have the latest video context."
+                                )
+
+                    # Embed ElevenLabs Conversational AI widget
+                    widget_html = f"""
+<elevenlabs-convai
+  agent-id="{settings.elevenlabs_agent_id}"
+  variant="expanded"
+  override-language="{language}"
+></elevenlabs-convai>
+<script
+  src="https://unpkg.com/@elevenlabs/convai-widget-embed"
+  async
+  type="text/javascript"
+></script>
+"""
+                    components.html(widget_html, height=640, scrolling=True)
+                else:
+                    st.warning(
+                        "⚠️ ELEVENLABS_AGENT_ID not configured. Please set it in .env to enable voice conversation."
+                    )
+                    logger.warning("ELEVENLABS_AGENT_ID not configured")
     
     with tab2:
         st.subheader("Upload an Image File")
@@ -483,258 +634,6 @@ def main():
             except Exception as e:
                 st.error(f"Error downloading video: {str(e)}")
                 media_bytes = None
-    
-    # Analyze button
-    if media_bytes:
-        st.divider()
-        if st.button("🚀 Analyze Video", type="primary", use_container_width=True):
-            try:
-                settings = get_settings()
-                
-                # Validate media size
-                max_size = settings.max_video_bytes
-                if len(media_bytes) > max_size:
-                    st.error(
-                        f"File is too large. Maximum size: {max_size / 1024 / 1024:.0f} MB. "
-                        f"Your file: {len(media_bytes) / 1024 / 1024:.2f} MB"
-                    )
-                else:
-                    # Process through full pipeline
-                    if mime_type is None:
-                        mime_type = "video/mp4" if not is_image else "image/jpeg"  # Default fallback
-                    start_time = time.time()
-                    results = process_video_assistance(
-                        media_bytes,
-                        mime_type,
-                        language,
-                        user_hint if user_hint.strip() else None,
-                        part_number if part_number.strip() else None,
-                        is_image=is_image,
-                    )
-                    elapsed_time = time.time() - start_time
-                    
-                    # Display results
-                    st.success(f"✅ Analysis complete in {elapsed_time:.1f} seconds!")
-                    
-                    # Store analysis data for voice conversation
-                    st.session_state.video_analysis_data = results["analysis"]
-                    analysis = results["analysis"]
-                    
-                    display_results(results)
-                    
-                    # Update Agent System Instructions and display Widget
-                    st.markdown("---")
-                    st.subheader("🎤 Voice Conversation with AI Agent")
-                    
-                    if settings.elevenlabs_agent_id:
-                        # Get write API key (required for convai_write permission)
-                        api_key = settings.get_elevenlabs_api_key_for_write()
-                        if not api_key:
-                            st.warning("⚠️ ELEVENLABS_API_KEY or ELEVENLABS_API_KEY_WRITE not configured. Please set it in .env to enable agent updates.")
-                            logger.warning("ELEVENLABS_API_KEY not configured for write operations")
-                        else:
-                            # Update Agent System Instructions with video context
-                            with st.spinner("🔄 Updating Agent with video analysis context..."):
-                                try:
-                                    from app.elevenlabs_agent import update_agent_system_instructions
-                                    
-                                    logger.info("Starting agent system instructions update")
-                                    logger.info(f"Agent ID: {settings.elevenlabs_agent_id}")
-                                    logger.info(f"Using API key for write operations")
-                                    logger.info(f"Video analysis - Appliance: {analysis.get('appliance_type')}, Part: {analysis.get('part_number')}")
-                                    
-                                    update_result = update_agent_system_instructions(
-                                        agent_id=settings.elevenlabs_agent_id,
-                                        api_key=api_key,
-                                        video_analysis=analysis,
-                                        language=language,
-                                    )
-                                    
-                                    if update_result.get("success"):
-                                        st.success("✅ Agent updated with video analysis context!")
-                                        logger.info(f"Agent update successful: {update_result}")
-                                        
-                                        # Display update info
-                                        with st.expander("📋 Agent Update Details", expanded=False):
-                                            st.json({
-                                                "agent_id": update_result.get("agent_id"),
-                                                "agent_name": update_result.get("agent_name"),
-                                                "system_instructions_length": update_result.get("system_instructions_length"),
-                                                "video_context": update_result.get("video_context"),
-                                            })
-                                    else:
-                                        st.error("❌ Failed to update Agent. Please check logs.")
-                                        logger.error(f"Agent update failed: {update_result}")
-                                        
-                                except ElevenLabsAgentError as e:
-                                    st.error(f"❌ Failed to update Agent: {str(e)}")
-                                    logger.error(f"ElevenLabs Agent Error: {str(e)}")
-                                    st.warning("⚠️ Widget will still work, but Agent may not have the latest video context.")
-                                    
-                                except Exception as e:
-                                    st.error(f"❌ Unexpected error updating Agent: {str(e)}")
-                                    logger.exception(f"Unexpected error updating agent: {str(e)}")
-                                    st.warning("⚠️ Widget will still work, but Agent may not have the latest video context.")
-                            
-                            # Voice conversation using SDK (instead of widget)
-                            st.markdown("**🎤 Voice Conversation with AI Agent:**")
-                            
-                            # Initialize conversation state if not exists
-                            if "conversation_id" not in st.session_state:
-                                st.session_state.conversation_id = None
-                            if "conversation_messages" not in st.session_state:
-                                st.session_state.conversation_messages = []
-                            if "is_recording" not in st.session_state:
-                                st.session_state.is_recording = False
-                            if "audio_bytes" not in st.session_state:
-                                st.session_state.audio_bytes = None
-                            if "last_processed_audio_hash" not in st.session_state:
-                                st.session_state.last_processed_audio_hash = None
-                            
-                            # Try to import audio recorder
-                            try:
-                                from audio_recorder_streamlit import audio_recorder
-                                
-                                # Audio recorder with microphone icon
-                                col1, col2, col3 = st.columns([1, 2, 1])
-                                with col2:
-                                    st.markdown("### 🎙️ Press to Record")
-                                    audio_bytes_recorded = audio_recorder(
-                                        text="",
-                                        recording_color="#e74c3c",
-                                        neutral_color="#34495e",
-                                        icon_name="microphone",
-                                        icon_size="3x",
-                                    )
-                                    
-                                    if audio_bytes_recorded:
-                                        import hashlib
-                                        
-                                        # Calculate hash of recorded audio
-                                        audio_hash = hashlib.md5(audio_bytes_recorded).hexdigest()
-                                        
-                                        # Only process if this is new audio (not already processed)
-                                        if audio_hash != st.session_state.last_processed_audio_hash:
-                                            st.session_state.audio_bytes = audio_bytes_recorded
-                                            st.session_state.is_recording = False
-                                            
-                                            # Process audio
-                                            with st.spinner("🔄 Sending audio to agent..."):
-                                                try:
-                                                    from app.elevenlabs_agent import send_audio_to_agent
-                                                    
-                                                    response = send_audio_to_agent(
-                                                        agent_id=settings.elevenlabs_agent_id,
-                                                        api_key=api_key,
-                                                        audio_bytes=audio_bytes_recorded,
-                                                        conversation_id=st.session_state.conversation_id,
-                                                        audio_format="audio/wav",
-                                                    )
-                                                    
-                                                    if response.get("success"):
-                                                        # Update conversation ID
-                                                        if response.get("conversation_id"):
-                                                            st.session_state.conversation_id = response.get("conversation_id")
-                                                        
-                                                        # Get response text and audio
-                                                        response_text = response.get("response_text", "")
-                                                        response_audio = response.get("response_audio")
-                                                        citations = response.get("citations", [])
-                                                        
-                                                        # Add user message (transcript from audio)
-                                                        user_transcript = "🎤 [Audio message]"  # Could be extracted from audio if available
-                                                        st.session_state.conversation_messages.append({
-                                                            "role": "user",
-                                                            "text": user_transcript
-                                                        })
-                                                        
-                                                        # Add agent response
-                                                        st.session_state.conversation_messages.append({
-                                                            "role": "assistant",
-                                                            "text": response_text,
-                                                            "citations": citations,
-                                                            "audio": response_audio
-                                                        })
-                                                        
-                                                        # Play agent audio response if available
-                                                        if response_audio:
-                                                            st.audio(response_audio, format="audio/wav")
-                                                        
-                                                        # Clear audio bytes
-                                                        st.session_state.audio_bytes = None
-                                                        
-                                                        # Mark this audio as processed
-                                                        st.session_state.last_processed_audio_hash = audio_hash
-                                                        
-                                                        # Rerun to show new messages (only after successful processing)
-                                                        st.rerun()
-                                                    else:
-                                                        st.error("❌ Failed to get response from agent")
-                                                        
-                                                except Exception as e:
-                                                    st.error(f"❌ Error: {str(e)}")
-                                                    logger.exception(f"Error sending audio: {str(e)}")
-                                
-                            except ImportError:
-                                st.warning("⚠️ `audio-recorder-streamlit` not installed. Installing...")
-                                st.code("pip install audio-recorder-streamlit", language="bash")
-                                st.info("Please install the package and restart the app.")
-                            
-                            # Display conversation history
-                            if st.session_state.conversation_messages:
-                                st.markdown("---")
-                                st.markdown("### 📜 Conversation History")
-                                for i, msg in enumerate(st.session_state.conversation_messages):
-                                    if msg["role"] == "user":
-                                        with st.chat_message("user"):
-                                            st.write(msg["text"])
-                                    else:
-                                        with st.chat_message("assistant"):
-                                            st.write(msg["text"])
-                                            
-                                            # Play audio if available
-                                            if msg.get("audio"):
-                                                st.audio(msg["audio"], format="audio/wav")
-                                            
-                                            # Show citations
-                                            if msg.get("citations"):
-                                                with st.expander("📖 Citations", expanded=False):
-                                                    for citation in msg["citations"]:
-                                                        st.write(f"- {citation.get('file', 'Unknown')} (Page {citation.get('page', 'N/A')})")
-                            
-                            # Clear conversation button
-                            col_clear1, col_clear2, col_clear3 = st.columns([1, 1, 1])
-                            with col_clear2:
-                                if st.button("🗑️ Clear Conversation", type="secondary", use_container_width=True):
-                                    st.session_state.conversation_id = None
-                                    st.session_state.conversation_messages = []
-                                    st.session_state.audio_bytes = None
-                                    st.rerun()
-                            
-                            # Additional info
-                            st.markdown("---")
-                            if settings.elevenlabs_knowledge_base_id:
-                                st.info(f"💡 **Agent is configured with Knowledge Base:** `{settings.elevenlabs_knowledge_base_id}`")
-                            st.info("💡 **Tip:** The Agent now has access to the video analysis context and will use the Knowledge Base to provide accurate answers with citations.")
-                            st.info("💡 **Note:** This conversation uses SDK directly, ensuring full video context is available to the agent.")
-                    else:
-                        st.warning("⚠️ ELEVENLABS_AGENT_ID not configured. Please set it in .env to enable voice conversation.")
-                        logger.warning("ELEVENLABS_AGENT_ID not configured")
-                    
-            except ValueError as e:
-                st.error(f"Configuration error: {str(e)}")
-                st.info("Please check your .env file or environment variables for GEMINI_API_KEY")
-            except VideoDownloadError as e:
-                st.error(f"Video processing error: {str(e)}")
-            except GeminiAPIError as e:
-                st.error(f"AI API error: {str(e)}")
-                if e.retry_after_seconds:
-                    st.info(f"Please retry after {e.retry_after_seconds} seconds")
-            except Exception as e:
-                st.error(f"Unexpected error: {str(e)}")
-                st.exception(e)
-    else:
-        st.info("👆 Please upload a video/image file or provide a video URL to begin analysis")
     
     # Knowledge Base Management Tab
     with tab4:
