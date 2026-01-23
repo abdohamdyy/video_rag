@@ -776,6 +776,8 @@ async def start_conversation(
                     "language": agent_config["language"],
                 },
                 "system_instructions": agent_config["system_instructions"],
+                # Pass these to ElevenLabs session initiation (SDK/widget) so {{video_context}} is filled at runtime
+                "dynamic_variables": agent_config.get("dynamic_variables", {}),
                 "message": "Agent initialized. Use ElevenLabs SDK to start voice conversation.",
             },
         )

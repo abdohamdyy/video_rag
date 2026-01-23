@@ -4,6 +4,8 @@ Analyzes videos to identify appliance defects and provides repair instructions w
 """
 
 import asyncio
+import html
+import json
 import logging
 import time
 from typing import Optional
@@ -494,74 +496,49 @@ def main():
 
                 settings = get_settings()
                 if settings.elevenlabs_agent_id:
-                    # Get write API key (required for convai_write permission)
-                    api_key = settings.get_elevenlabs_api_key_for_write()
-                    if not api_key:
-                        st.warning(
-                            "⚠️ ELEVENLABS_API_KEY or ELEVENLABS_API_KEY_WRITE not configured. "
-                            "Please set it in .env to enable agent updates."
-                        )
-                        logger.warning("ELEVENLABS_API_KEY not configured for write operations")
-                    else:
-                        # Update Agent System Instructions with video context
-                        with st.spinner("🔄 Updating Agent with video analysis context..."):
+                    # Build runtime dynamic variable "video_context" from the Gemini analysis
+                    from app.elevenlabs_agent import build_video_context_text
+
+                    video_context = build_video_context_text(video_analysis=analysis, language=language)
+                    dynamic_vars = {"video_context": video_context}
+                    # Escape to keep the HTML attribute safe even if transcript contains quotes/newlines.
+                    dynamic_vars_attr = html.escape(
+                        json.dumps(dynamic_vars, ensure_ascii=False),
+                        quote=True,
+                    ).replace("'", "&#39;")
+
+                    # Optional (recommended): ensure the Agent system prompt template includes {{video_context}}
+                    # This is a one-time update per Streamlit session if a write key is configured.
+                    if "agent_prompt_template_updated" not in st.session_state:
+                        st.session_state.agent_prompt_template_updated = False
+
+                    api_key_write = settings.get_elevenlabs_api_key_for_write()
+                    if api_key_write and not st.session_state.agent_prompt_template_updated:
+                        with st.spinner("🔄 Syncing Agent prompt template (for {{video_context}})..."):
                             try:
                                 from app.elevenlabs_agent import update_agent_system_instructions
 
-                                logger.info("Starting agent system instructions update")
-                                logger.info(f"Agent ID: {settings.elevenlabs_agent_id}")
-                                logger.info("Using API key for write operations")
-                                logger.info(
-                                    "Video analysis - Appliance: %s, Part: %s",
-                                    analysis.get("appliance_type"),
-                                    analysis.get("part_number"),
-                                )
-
-                                update_result = update_agent_system_instructions(
+                                update_agent_system_instructions(
                                     agent_id=settings.elevenlabs_agent_id,
-                                    api_key=api_key,
+                                    api_key=api_key_write,
                                     video_analysis=analysis,
                                     language=language,
                                 )
-
-                                if update_result.get("success"):
-                                    st.success("✅ Agent updated with video analysis context!")
-                                    logger.info("Agent update successful: %s", update_result)
-
-                                    with st.expander("📋 Agent Update Details", expanded=False):
-                                        st.json(
-                                            {
-                                                "agent_id": update_result.get("agent_id"),
-                                                "agent_name": update_result.get("agent_name"),
-                                                "system_instructions_length": update_result.get(
-                                                    "system_instructions_length"
-                                                ),
-                                                "video_context": update_result.get("video_context"),
-                                            }
-                                        )
-                                else:
-                                    st.error("❌ Failed to update Agent. Please check logs.")
-                                    logger.error("Agent update failed: %s", update_result)
-
+                                st.session_state.agent_prompt_template_updated = True
                             except ElevenLabsAgentError as e:
-                                st.error(f"❌ Failed to update Agent: {str(e)}")
-                                logger.error("ElevenLabs Agent Error: %s", str(e))
+                                logger.warning("Failed to update agent prompt template: %s", str(e))
                                 st.warning(
-                                    "⚠️ Widget will still work, but Agent may not have the latest video context."
-                                )
-                            except Exception as e:
-                                st.error(f"❌ Unexpected error updating Agent: {str(e)}")
-                                logger.exception("Unexpected error updating agent: %s", str(e))
-                                st.warning(
-                                    "⚠️ Widget will still work, but Agent may not have the latest video context."
+                                    "⚠️ Couldn't sync Agent prompt template automatically. "
+                                    "Make sure your Agent system prompt contains `{{video_context}}`."
                                 )
 
-                    # Embed ElevenLabs Conversational AI widget
+                    # Embed ElevenLabs Conversational AI widget (dynamic variables injected at session start)
                     widget_html = f"""
 <elevenlabs-convai
   agent-id="{settings.elevenlabs_agent_id}"
   variant="expanded"
   override-language="{language}"
+  dynamic-variables='{dynamic_vars_attr}'
 ></elevenlabs-convai>
 <script
   src="https://unpkg.com/@elevenlabs/convai-widget-embed"

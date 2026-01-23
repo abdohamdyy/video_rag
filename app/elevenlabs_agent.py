@@ -47,144 +47,130 @@ def build_agent_system_instructions(
         System instructions string
     """
     template = _load_system_instructions_template()
-    
-    appliance = video_analysis.get("appliance_type", "الجهاز" if language == "ar" else "appliance")
+    # The recommended pattern is to keep the agent prompt stable and inject runtime
+    # context via ElevenLabs Dynamic Variables (e.g. {{video_context}}).
+    #
+    # The `video_analysis` argument is kept for backward compatibility with older callers.
+    # If you need to inline the context (no dynamic variables), use `build_video_context_text()`.
+    return template
+
+
+def build_video_context_text(
+    video_analysis: Dict[str, Any],
+    language: str = "ar",
+    transcript_max_chars: int = 4000,
+) -> str:
+    """
+    Build a single text blob suitable for the dynamic variable `video_context`.
+
+    This is what you pass as:
+      - Widget attribute: dynamic-variables='{"video_context": "..."}'
+      - Python SDK: ConversationInitiationData(dynamic_variables={"video_context": "..."})
+    """
+    if not video_analysis:
+        return ""
+
+    appliance = video_analysis.get("appliance_type") or ("الجهاز" if language == "ar" else "appliance")
     brand = video_analysis.get("brand_or_model") or ("غير محدد" if language == "ar" else "not specified")
     part_num = video_analysis.get("part_number") or ("غير محدد" if language == "ar" else "not specified")
     issue = video_analysis.get("issue_summary") or ("مشكلة" if language == "ar" else "issue")
-    transcript = video_analysis.get("transcript", "")
-    root_causes = video_analysis.get("likely_root_causes", [])
-    fix_steps = video_analysis.get("recommended_fix_steps", [])
-    safety_warnings = video_analysis.get("safety_warnings", [])
-    tools_parts = video_analysis.get("tools_or_parts_needed", [])
-    questions_to_confirm = video_analysis.get("questions_to_confirm", [])
-    
-    # Build context section with FULL details
+    transcript = (video_analysis.get("transcript") or "").strip()
+    root_causes = video_analysis.get("likely_root_causes") or []
+    fix_steps = video_analysis.get("recommended_fix_steps") or []
+    safety_warnings = video_analysis.get("safety_warnings") or []
+    tools_parts = video_analysis.get("tools_or_parts_needed") or []
+    questions_to_confirm = video_analysis.get("questions_to_confirm") or []
+
+    if transcript and transcript_max_chars > 0 and len(transcript) > transcript_max_chars:
+        transcript = transcript[:transcript_max_chars].rstrip() + "\n...[TRUNCATED]..."
+
     if language == "ar":
-        context_section = f"""
-## ⚠️ معلومات مهمة جداً - سياق الفيديو الذي تم تحليله:
+        lines: List[str] = []
+        lines.append("ملخص/تفاصيل من تحليل الفيديو (Gemini):")
+        lines.append(f"- نوع الجهاز: {appliance}")
+        lines.append(f"- الماركة/الموديل: {brand}")
+        lines.append(f"- Part Number: {part_num}")
+        lines.append(f"- ملخص المشكلة: {issue}")
 
-**عندما يسألك العميل عن أي شيء متعلق بالفيديو، استخدم هذه المعلومات بالكامل للإجابة:**
-
-### معلومات الجهاز:
-- **نوع الجهاز**: {appliance}
-- **الماركة/الموديل**: {brand}
-- **Part Number**: {part_num}
-- **ملخص المشكلة**: {issue}
-
-"""
-        # Include FULL transcript (not truncated)
         if transcript:
-            context_section += f"""### Transcript الكامل من الفيديو:
-{transcript}
+            lines.append("")
+            lines.append("Transcript (من الفيديو):")
+            lines.append(transcript)
 
-"""
-        
-        # Include ALL root causes
         if root_causes:
-            context_section += "### جميع الأسباب المحتملة:\n"
+            lines.append("")
+            lines.append("الأسباب المحتملة (Likely root causes):")
             for i, cause in enumerate(root_causes, 1):
-                context_section += f"{i}. {cause}\n"
-            context_section += "\n"
-        
-        # Include ALL fix steps
+                lines.append(f"{i}. {cause}")
+
         if fix_steps:
-            context_section += "### جميع خطوات الإصلاح المقترحة:\n"
+            lines.append("")
+            lines.append("خطوات إصلاح مقترحة (Recommended steps):")
             for i, step in enumerate(fix_steps, 1):
-                context_section += f"{i}. {step}\n"
-            context_section += "\n"
-        
-        # Include safety warnings
+                lines.append(f"{i}. {step}")
+
         if safety_warnings:
-            context_section += "### تحذيرات السلامة:\n"
+            lines.append("")
+            lines.append("تحذيرات سلامة (Safety warnings):")
             for i, warning in enumerate(safety_warnings, 1):
-                context_section += f"⚠️ {i}. {warning}\n"
-            context_section += "\n"
-        
-        # Include tools/parts needed
+                lines.append(f"⚠️ {i}. {warning}")
+
         if tools_parts:
-            context_section += f"### الأدوات والأجزاء المطلوبة:\n"
-            context_section += ", ".join(tools_parts) + "\n\n"
-        
-        # Include questions to confirm
+            lines.append("")
+            lines.append("أدوات/قطع مطلوبة (Tools/parts):")
+            lines.append(", ".join(map(str, tools_parts)))
+
         if questions_to_confirm:
-            context_section += "### أسئلة للتأكيد:\n"
-            for i, question in enumerate(questions_to_confirm, 1):
-                context_section += f"{i}. {question}\n"
-            context_section += "\n"
-        
-        context_section += """### تعليمات مهمة:
-- عندما يسألك العميل عن أي شيء في الفيديو، استخدم المعلومات أعلاه للإجابة
-- إذا سأل عن شيء موجود في Transcript، اذكره بالضبط
-- إذا سأل عن المشكلة، استخدم ملخص المشكلة والأسباب المحتملة
-- إذا سأل عن كيفية الإصلاح، استخدم خطوات الإصلاح المقترحة
-- دائماً اربط المعلومات من الفيديو بالمعلومات من Knowledge Base عند الإجابة
-"""
-    else:
-        context_section = f"""
-## ⚠️ CRITICAL INFORMATION - Video Analysis Context:
+            lines.append("")
+            lines.append("أسئلة للتأكيد (Questions to confirm):")
+            for i, q in enumerate(questions_to_confirm, 1):
+                lines.append(f"{i}. {q}")
 
-**When the customer asks about anything related to the video, use this complete information to answer:**
+        return "\n".join(lines).strip()
 
-### Device Information:
-- **Appliance Type**: {appliance}
-- **Brand/Model**: {brand}
-- **Part Number**: {part_num}
-- **Issue Summary**: {issue}
+    # English
+    lines = []
+    lines.append("Video analysis context (Gemini):")
+    lines.append(f"- Appliance type: {appliance}")
+    lines.append(f"- Brand/model: {brand}")
+    lines.append(f"- Part number: {part_num}")
+    lines.append(f"- Issue summary: {issue}")
 
-"""
-        # Include FULL transcript (not truncated)
-        if transcript:
-            context_section += f"""### Complete Video Transcript:
-{transcript}
+    if transcript:
+        lines.append("")
+        lines.append("Transcript (from video):")
+        lines.append(transcript)
 
-"""
-        
-        # Include ALL root causes
-        if root_causes:
-            context_section += "### All Likely Root Causes:\n"
-            for i, cause in enumerate(root_causes, 1):
-                context_section += f"{i}. {cause}\n"
-            context_section += "\n"
-        
-        # Include ALL fix steps
-        if fix_steps:
-            context_section += "### All Recommended Fix Steps:\n"
-            for i, step in enumerate(fix_steps, 1):
-                context_section += f"{i}. {step}\n"
-            context_section += "\n"
-        
-        # Include safety warnings
-        if safety_warnings:
-            context_section += "### Safety Warnings:\n"
-            for i, warning in enumerate(safety_warnings, 1):
-                context_section += f"⚠️ {i}. {warning}\n"
-            context_section += "\n"
-        
-        # Include tools/parts needed
-        if tools_parts:
-            context_section += f"### Required Tools & Parts:\n"
-            context_section += ", ".join(tools_parts) + "\n\n"
-        
-        # Include questions to confirm
-        if questions_to_confirm:
-            context_section += "### Questions to Confirm:\n"
-            for i, question in enumerate(questions_to_confirm, 1):
-                context_section += f"{i}. {question}\n"
-            context_section += "\n"
-        
-        context_section += """### Important Instructions:
-- When the customer asks about anything in the video, use the information above to answer
-- If they ask about something in the Transcript, mention it exactly
-- If they ask about the problem, use the issue summary and likely root causes
-- If they ask about how to fix it, use the recommended fix steps
-- Always connect video information with Knowledge Base information when answering
-"""
-    
-    # Combine template with context
-    instructions = f"{template}\n\n{context_section}"
-    
-    return instructions
+    if root_causes:
+        lines.append("")
+        lines.append("Likely root causes:")
+        for i, cause in enumerate(root_causes, 1):
+            lines.append(f"{i}. {cause}")
+
+    if fix_steps:
+        lines.append("")
+        lines.append("Recommended fix steps:")
+        for i, step in enumerate(fix_steps, 1):
+            lines.append(f"{i}. {step}")
+
+    if safety_warnings:
+        lines.append("")
+        lines.append("Safety warnings:")
+        for i, warning in enumerate(safety_warnings, 1):
+            lines.append(f"⚠️ {i}. {warning}")
+
+    if tools_parts:
+        lines.append("")
+        lines.append("Required tools/parts:")
+        lines.append(", ".join(map(str, tools_parts)))
+
+    if questions_to_confirm:
+        lines.append("")
+        lines.append("Questions to confirm:")
+        for i, q in enumerate(questions_to_confirm, 1):
+            lines.append(f"{i}. {q}")
+
+    return "\n".join(lines).strip()
 
 
 def initialize_agent_with_video_context(
@@ -221,6 +207,9 @@ def initialize_agent_with_video_context(
     
     # Build system instructions
     system_instructions = build_agent_system_instructions(video_analysis, language)
+
+    # Build runtime dynamic variable payload
+    video_context = build_video_context_text(video_analysis=video_analysis, language=language)
     
     # Store video context in conversation state
     if conversation_state:
@@ -233,6 +222,9 @@ def initialize_agent_with_video_context(
         "system_instructions": system_instructions,
         "language": language,
         "video_analysis": video_analysis,
+        "dynamic_variables": {
+            "video_context": video_context,
+        },
     }
 
 
@@ -257,6 +249,7 @@ def create_conversation_session(
     try:
         from elevenlabs.client import ElevenLabs
         from elevenlabs.conversational_ai.conversation import Conversation
+        from elevenlabs.conversational_ai.conversation import ConversationInitiationData
         from elevenlabs.conversational_ai.default_audio_interface import DefaultAudioInterface
     except ImportError as e:
         raise RuntimeError(
@@ -285,10 +278,14 @@ def create_conversation_session(
             callback_user_transcript(transcript)
         conversation_state.add_message(role="user", text=transcript)
     
+    dynamic_vars = agent_config.get("dynamic_variables") or {}
+    config = ConversationInitiationData(dynamic_variables=dynamic_vars) if dynamic_vars else None
+
     # Create conversation
     conversation = Conversation(
         elevenlabs=client,
         agent_id=agent_config["agent_id"],
+        config=config,
         requires_auth=bool(agent_config["api_key"]),
         audio_interface=DefaultAudioInterface(),
         callback_agent_response=handle_agent_response,
@@ -406,14 +403,18 @@ def update_agent_system_instructions(
     language: str = "ar",
 ) -> Dict[str, Any]:
     """
-    Update ElevenLabs Agent's system instructions with video analysis context.
+    Update ElevenLabs Agent's system instructions (template).
+    
+    This updates the agent's system prompt to the local template in
+    `app/prompts/agent_system_instructions.md`, which includes `{{video_context}}`.
+    The actual per-session video details should be passed at runtime via dynamic variables.
     
     Uses PATCH /v1/convai/agents/{agent_id} to update the agent's system prompt.
     
     Args:
         agent_id: ElevenLabs Agent ID
         api_key: ElevenLabs API key
-        video_analysis: Video analysis results to include in system instructions
+        video_analysis: Video analysis results (used only for logging/preview metadata)
         language: Language code ("ar" or "en")
         
     Returns:
